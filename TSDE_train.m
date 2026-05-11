@@ -39,20 +39,21 @@ for i = 1:num_nets
 end
 preds_mean = preds_mean / num_nets;
 
-% Mivel a hiba mikroszkopikus, a hálózat nem tud belőle tanulni. 
-% A 100-szoros szorzó "felébreszti" a gradienseket.
-YTrain_sigma_dl = dlarray(abs(Training_Outputs - preds_mean)' * 100.0, 'CB');
+% Visszatérünk az abszolút hiba (szórás) közvetlen tanulásához!
+% A négyzetre emelés túlságosan "eltüntette" a parányi hibákat.
+YTrain_sigma_dl = dlarray(abs((Training_Outputs - preds_mean)') * 100.0, 'CB');
 
-% --- Architektúra B hálózatoknak (14 BEMENET, 128 -> 64 -> 32) ---
+% --- Architektúra B hálózatoknak (15 BEMENET) ---
 layers_sigma = [
     featureInputLayer(15, 'Normalization', 'zscore') 
     fullyConnectedLayer(128) 
-    tanhLayer
+    leakyReluLayer(0.01) % A Leaky ReLU átenged pici negatív gradienst, így nem "hal meg" a hálózat
     fullyConnectedLayer(64)  
-    tanhLayer
+    leakyReluLayer(0.01)
     fullyConnectedLayer(32)  
-    tanhLayer
+    leakyReluLayer(0.01)
     fullyConnectedLayer(4)
+    reluLayer % A LÉNYEG: a legutolsó réteg sima ReLU, hogy a kimenet szigorúan >= 0 maradjon!
     ];
 
 disp('--> 2. Lépcső: Ensemble B (Bizonytalanság) tanítása...');

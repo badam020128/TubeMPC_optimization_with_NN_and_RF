@@ -77,15 +77,17 @@ for mode = 1:2
             current_kappa = kappa_ref_test(k);
             % 15 Elemű bemenet lekérdezése
             nn_input = dlarray([x_real; x_hist1; x_hist2; u_prev; current_kappa], 'CB'); 
-            
+
             tippek_mean = zeros(4, num_nets); tippek_sigma = zeros(4, num_nets);
             for i = 1:num_nets
                 tippek_mean(:, i) = double(extractdata(predict(ensemble_mean{i}, nn_input)));
                 tippek_sigma(:, i) = double(extractdata(predict(ensemble_sigma{i}, nn_input)));
             end
             
-            % --- VISSZAOSZTJUK A 100-AS SZORZÓT ÉS ABSZOLÚT ÉRTÉKET VESZÜNK ---
-            w_zaj_mertek = abs(mean(tippek_sigma, 2)) / 100.0; 
+            % --- VISSZAOSZTJUK A 100-AS SZORZÓT ---
+            % Mivel abszolút hibát (szórást) tanultunk, NEM kell gyökvonás!
+            w_zaj_mertek = mean(tippek_sigma, 2) / 100.0; 
+            
             max_biz = max(w_zaj_mertek(1:2));
             w_raw = mean(tippek_mean, 2); 
             
@@ -94,6 +96,8 @@ for mode = 1:2
             w_smoothed = (1 - alpha_ema) * w_smoothed + alpha_ema * w_raw; 
             w_becsult = max(min(w_smoothed, 0.5), -0.5); 
             
+            % Itt most már egy matematikailag korrekt szórásérték (max_biz) alapján
+            % állítjuk be a csőszűkítést és az agresszivitást.
             tightening_factor = min(0.85, max_biz * 20.0); 
             current_q_mult = min(exp(max_biz * 15.0), 15.0); 
             
