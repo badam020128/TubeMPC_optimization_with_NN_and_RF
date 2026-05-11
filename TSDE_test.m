@@ -22,7 +22,15 @@ t_sim_test = 0:Ts:t_path_test(end);
 
 X_ref = interp1(t_path_test, multi_lap_path(:,1), t_sim_test, 'linear', 'extrap');
 Y_ref = interp1(t_path_test, multi_lap_path(:,2), t_sim_test, 'linear', 'extrap');
-RefMatrix = [X_ref', Y_ref', [diff(X_ref)/Ts, 0]', [diff(Y_ref)/Ts, 0]'];
+Vx_ref_test = [diff(X_ref)/Ts, 0];
+Vy_ref_test = [diff(Y_ref)/Ts, 0];
+
+% --- ÚJ: Teszt pálya görbületének kiszámítása ---
+Ax_ref_test = [diff(Vx_ref_test)/Ts, 0];
+Ay_ref_test = [diff(Vy_ref_test)/Ts, 0];
+kappa_ref_test = (Vx_ref_test .* Ay_ref_test - Vy_ref_test .* Ax_ref_test) ./ max((Vx_ref_test.^2 + Vy_ref_test.^2).^(3/2), 1e-6);
+
+RefMatrix = [X_ref', Y_ref', Vx_ref_test', Vy_ref_test'];
 
 % Dinamika és LQR (Azonos a tanítóval!)
 A = [1 0 Ts 0; 0 1 0 Ts; 0 0 1 0; 0 0 0 1]; B = [0 0; 0 0; Ts 0; 0 Ts];
@@ -66,8 +74,10 @@ for mode = 1:2
         if mode == 1
             w_becsult = [0; 0; 0; 0]; tightening_factor = 0.0; current_q_mult = 1.0; 
         else
-            % 14 Elemű bemenet lekérdezése
-            nn_input = dlarray([x_real; x_hist1; x_hist2; u_prev], 'CB'); 
+            current_kappa = kappa_ref_test(k);
+            % 15 Elemű bemenet lekérdezése
+            nn_input = dlarray([x_real; x_hist1; x_hist2; u_prev; current_kappa], 'CB'); 
+            
             tippek_mean = zeros(4, num_nets); tippek_sigma = zeros(4, num_nets);
             for i = 1:num_nets
                 tippek_mean(:, i) = double(extractdata(predict(ensemble_mean{i}, nn_input)));
@@ -140,4 +150,4 @@ ax4 = subplot(1, 4, 4); hold on; grid on;
 plot(t_sim_test(1:n_steps_test), q_mult_history, 'm-', 'LineWidth', 1.5); title('MPC Agresszivitás (Q Szorzó)', 'Color', 'w'); set(ax4, 'Color', 'k', 'XColor', 'w', 'YColor', 'w');
 
 mean_cl = mean(errors_cl); mean_ai = mean(errors_ai);
-fprintf('\n=== VÉGSŐ EREDMÉNYEK ===\nKlasszikus: %.4f m\nAI (SOTA): %.4f m\nJAVULÁS: +%.1f %%\n', mean_cl, mean_ai, (1 - (mean_ai / mean_cl)) * 100);
+fprintf('\n=== VÉGSŐ EREDMÉNYEK ===\nKlasszikus: %.4f m\nAI (TSDE): %.4f m\nJAVULÁS: +%.1f %%\n', mean_cl, mean_ai, (1 - (mean_ai / mean_cl)) * 100);

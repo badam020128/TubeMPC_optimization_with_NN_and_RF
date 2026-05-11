@@ -12,7 +12,7 @@ YTrain_dl = dlarray(Training_Outputs', 'CB');
 
 % --- Architektúra A hálózatoknak (14 BEMENET, 128 -> 64 -> 32) ---
 layers = [
-    featureInputLayer(14, 'Normalization', 'zscore') 
+    featureInputLayer(15, 'Normalization', 'zscore') 
     fullyConnectedLayer(128) 
     tanhLayer
     fullyConnectedLayer(64)  
@@ -45,7 +45,7 @@ YTrain_sigma_dl = dlarray(abs(Training_Outputs - preds_mean)' * 100.0, 'CB');
 
 % --- Architektúra B hálózatoknak (14 BEMENET, 128 -> 64 -> 32) ---
 layers_sigma = [
-    featureInputLayer(14, 'Normalization', 'zscore') 
+    featureInputLayer(15, 'Normalization', 'zscore') 
     fullyConnectedLayer(128) 
     tanhLayer
     fullyConnectedLayer(64)  

@@ -5,7 +5,7 @@ import casadi.*
 disp('=== 1. FÁZIS: CasADi MPC Szimuláció és Adatgyűjtés Indul ===');
 
 % --- BRUTE-FORCE ADATGYŰJTÉS ---
-korok_szama = 20;
+korok_szama = 10;
 egy_kor_pontjai = smooth_path(1:end-1, :); 
 multi_lap_path = repmat(egy_kor_pontjai, korok_szama, 1);
 multi_lap_path = [multi_lap_path; smooth_path(end, :)];
@@ -26,6 +26,11 @@ X_ref = interp1(t_path, multi_lap_path(:,1), t_sim, 'linear', 'extrap');
 Y_ref = interp1(t_path, multi_lap_path(:,2), t_sim, 'linear', 'extrap');
 Vx_ref = [diff(X_ref)/Ts, 0]; 
 Vy_ref = [diff(Y_ref)/Ts, 0];
+% --- ÚJ: Görbület (kappa) pontos analitikus kiszámítása ---
+Ax_ref = [diff(Vx_ref)/Ts, 0];
+Ay_ref = [diff(Vy_ref)/Ts, 0];
+kappa_ref = (Vx_ref .* Ay_ref - Vy_ref .* Ax_ref) ./ max((Vx_ref.^2 + Vy_ref.^2).^(3/2), 1e-6);
+
 RefMatrix = [X_ref', Y_ref', Vx_ref', Vy_ref'];
 
 % 2. Dinamika
@@ -92,8 +97,8 @@ disp('CasADi szimuláció fut... (az IPOPT megoldó dolgozik)');
 
 x_real_prev = x_real; 
 
-% Létrehozzuk az üres mátrixokat (MÁR 14 OSZLOPOK!)
-Training_Inputs = zeros(length(t_sim) - N - 1, 14);
+% Létrehozzuk az üres mátrixokat (MÁR 15 OSZLOP!)
+Training_Inputs = zeros(length(t_sim) - N - 1, 15);
 Training_Outputs = zeros(length(t_sim) - N - 1, 4);
 
 szel_memoria = [0; 0]; 
@@ -150,8 +155,9 @@ for k = 1 : length(t_sim) - N - 1
     x_predicted = A * x_real_prev + B * u_k; 
     residual_error = x_real_new - x_predicted;
 
-    % --- ÚJ: 14 ELEMŰ BEMENET MENTÉSE ---
-    Training_Inputs(k, :) = [x_real_prev', x_hist1', x_hist2', u_prev_log']; 
+    % --- ÚJ: 15 ELEMŰ BEMENET MENTÉSE (kappa-val kiegészítve) ---
+    current_kappa = kappa_ref(k);
+    Training_Inputs(k, :) = [x_real_prev', x_hist1', x_hist2', u_prev_log', current_kappa]; 
     Training_Outputs(k, :) = residual_error';
 
     % --- ÚJ: PUFFEREK LÉPTETÉSE A KÖVETKEZŐ KÖRRE ---
