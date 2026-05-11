@@ -34,7 +34,11 @@ RefMatrix = [X_ref', Y_ref', Vx_ref_test', Vy_ref_test'];
 
 % Dinamika és LQR (Azonos a tanítóval!)
 A = [1 0 Ts 0; 0 1 0 Ts; 0 0 1 0; 0 0 0 1]; B = [0 0; 0 0; Ts 0; 0 Ts];
-K_lqr = dlqr(A, B, diag([50, 50, 5, 5]), diag([0.5, 0.5]));
+% Eredeti:
+% K_lqr = dlqr(A, B, diag([50, 50, 5, 5]), diag([0.5, 0.5]));
+
+% Próbáld meg ezt (jobban odarántja az autót a prediktált z_nom állapotokhoz):
+K_lqr = dlqr(A, B, diag([150, 150, 10, 10]), diag([0.1, 0.1]));
 
 % CasADi Felépítése Self-Tuning Paraméterrel
 opti = casadi.Opti();
@@ -43,15 +47,33 @@ x0_param = opti.parameter(4, 1); ref_param = opti.parameter(4, N+1);
 w_nn_param = opti.parameter(4, 1); tube_uncertainty_param = opti.parameter(1, 1); 
 q_mult_param = opti.parameter(1, 1); % SELF-TUNING SZORZÓ
 
-Q_mpc_base = diag([100, 100, 0, 0]); R_mpc_base = diag([0.1, 0.1]);     
+% Az X és Y pozíció büntetését felemeljük 200-ra, és adunk a sebességeknek (Vx, Vy) is 5-5 súlyt.
+Q_mpc_base = diag([200, 200, 5, 5]); 
+R_mpc_base = diag([0.1, 0.1]); % Az R (beavatkozó jel büntetése) maradhat alacsony     
 cost = 0; max_y_elteres = 2.0; 
+
+% Definiáljunk egy R_delta_mpc mátrixot a cikluson kívül
+R_delta_mpc = diag([1.0, 1.0]); % A változás büntetése
 
 for k = 1:N
     err = X(:, k) - ref_param(:, k);
-    cost = cost + q_mult_param * (err' * Q_mpc_base * err) + U(:, k)' * R_mpc_base * U(:, k);
+    aktualis_R = R_mpc_base / sqrt(q_mult_param);
+    
+    % Alap költség
+    cost = cost + q_mult_param * (err' * Q_mpc_base * err) + U(:, k)' * aktualis_R * U(:, k);
+    
+    % ÚJ: Kormányzás változásának (Delta U) büntetése!
+    if k == 1
+        % Az első lépésnél az előző időlépés (u_prev) beavatkozásához képest nézzük a változást
+        % Ehhez fel kell venned egy új paramétert a CasADiban: u_prev_param = opti.parameter(2,1);
+        % cost = cost + (U(:, k) - u_prev_param)' * R_delta_mpc * (U(:, k) - u_prev_param);
+    else
+        % A többi lépésnél az előző horizon-pontbeli beavatkozáshoz képest
+        delta_u = U(:, k) - U(:, k-1);
+        cost = cost + delta_u' * R_delta_mpc * delta_u;
+    end
+    
     opti.subject_to(X(:, k+1) == A * X(:, k) + B * U(:, k) + w_nn_param);
-    % A csőszűkítés most már egy egzakt fizikai távolság (méterben), 
-    % nem pedig egy 0-1 közötti százalékos szorzó.
     akt_cs_szelesseg = max_y_elteres - tube_uncertainty_param;
     opti.subject_to( -akt_cs_szelesseg <= err(1:2) <= akt_cs_szelesseg );
 end
@@ -100,14 +122,24 @@ for mode = 1:2
             sigma_max = max(w_zaj_mertek(1:2)) + alap_zaj_szoras + (aktualis_hiba * 0.15); 
             
             w_raw = mean(tippek_mean, 2); 
-            alpha_ema = max(0.02, 0.9 - (sigma_max * 10.0));
+            % Eredeti: alpha_ema = max(0.02, 0.9 - (sigma_max * 10.0));
+            % ÚJ: Sokkal gyorsabb reakció az AI részéről!
+            alpha_ema = max(0.1, 1.0 - (sigma_max * 2.0)); 
+
             w_smoothed = (1 - alpha_ema) * w_smoothed + alpha_ema * w_raw; 
-            w_becsult = max(min(w_smoothed, 0.5), -0.5); 
+
+            % TÚLKOMPENZÁLÁS: Mivel az MPC kicsit lassan reagál a belső tehetetlenség miatt, 
+            % szorozzuk fel a prediktált szél/hiba hatást 1.1-gyel (10% proaktív túlkormányzás)!
+            w_becsult = max(min(w_smoothed * 1.1, 0.5), -0.5); 
             
-            % --- ANALITIKUS CSŐSZŰKÍTÉS (3-Szigma szabály) ---
-            d_max = 3.0 * sigma_max; 
-            margin_fizikai = min(d_max * 1.5, max_y_elteres * 0.85); 
-            current_q_mult = 1.0 + (margin_fizikai / max_y_elteres) * 5.0;
+            % 3 helyett 2-szigma is elég lehet (95% konfidencia), és vegyük ki az 1.5-ös szorzót.
+            d_max = 2.0 * sigma_max; 
+            margin_fizikai = min(d_max, max_y_elteres * 0.90); 
+
+            % Ha ezt megléped, az autó sokkal többször fogja a current_q_mult-ot a maximális
+            % közelébe tolni, mert a cső indokolatlanul nem fog felfújódni.
+            biztonsagi_tenyezo = (max_y_elteres - margin_fizikai) / max_y_elteres;
+            current_q_mult = 1.0 + (biztonsagi_tenyezo^2) * 20.0; % Mehet akár 20-as szorzó is!
             
             tube_history(k) = margin_fizikai; 
             q_mult_history(k) = current_q_mult;
