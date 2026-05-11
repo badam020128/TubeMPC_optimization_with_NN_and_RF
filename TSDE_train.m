@@ -3,7 +3,7 @@
 % =========================================================================
 disp('=== Kétlépcsős Deep Ensemble Tanítása Indul ===');
 
-num_nets = 5; 
+num_nets = 10; 
 ensemble_mean = cell(num_nets, 1);
 ensemble_sigma = cell(num_nets, 1);
 

@@ -161,7 +161,6 @@ plot(t_sim_test(1:n_steps_test), tube_history, 'y-', 'LineWidth', 1.5);
 title('Csőszűkítés [m]', 'Color', 'w'); 
 axis tight; % <--- EZT ÁLLÍTSD BE! (A fix ylim helyett ez ránagyít a pontos értékekre)
 set(ax3, 'Color', 'k', 'XColor', 'w', 'YColor', 'w');
-
 ax4 = subplot(1, 4, 4); hold on; grid on;
 plot(t_sim_test(1:n_steps_test), q_mult_history, 'm-', 'LineWidth', 1.5); title('MPC Agresszivitás (Q Szorzó)', 'Color', 'w'); set(ax4, 'Color', 'k', 'XColor', 'w', 'YColor', 'w');
 

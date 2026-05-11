@@ -5,7 +5,7 @@ import casadi.*
 disp('=== 1. FÁZIS: CasADi MPC Szimuláció és Adatgyűjtés Indul ===');
 
 % --- BRUTE-FORCE ADATGYŰJTÉS ---
-korok_szama = 10;
+korok_szama = 20;
 egy_kor_pontjai = smooth_path(1:end-1, :); 
 multi_lap_path = repmat(egy_kor_pontjai, korok_szama, 1);
 multi_lap_path = [multi_lap_path; smooth_path(end, :)];
