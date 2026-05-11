@@ -50,7 +50,9 @@ for k = 1:N
     err = X(:, k) - ref_param(:, k);
     cost = cost + q_mult_param * (err' * Q_mpc_base * err) + U(:, k)' * R_mpc_base * U(:, k);
     opti.subject_to(X(:, k+1) == A * X(:, k) + B * U(:, k) + w_nn_param);
-    akt_cs_szelesseg = max_y_elteres * (1.0 - tube_uncertainty_param);
+    % A csőszűkítés most már egy egzakt fizikai távolság (méterben), 
+    % nem pedig egy 0-1 közötti százalékos szorzó.
+    akt_cs_szelesseg = max_y_elteres - tube_uncertainty_param;
     opti.subject_to( -akt_cs_szelesseg <= err(1:2) <= akt_cs_szelesseg );
 end
 cost = cost + q_mult_param * ((X(:, N+1) - ref_param(:, N+1))' * Q_mpc_base * (X(:, N+1) - ref_param(:, N+1)));
@@ -72,12 +74,11 @@ for mode = 1:2
     for k = 1 : n_steps_test
         current_ref = RefMatrix(k : k+N, :)';
         if mode == 1
-            w_becsult = [0; 0; 0; 0]; tightening_factor = 0.0; current_q_mult = 1.0; 
+            w_becsult = [0; 0; 0; 0]; margin_fizikai = 0.0; current_q_mult = 1.0; 
         else
             current_kappa = kappa_ref_test(k);
-            % 15 Elemű bemenet lekérdezése
             nn_input = dlarray([x_real; x_hist1; x_hist2; u_prev; current_kappa], 'CB'); 
-
+            
             tippek_mean = zeros(4, num_nets); tippek_sigma = zeros(4, num_nets);
             for i = 1:num_nets
                 tippek_mean(:, i) = double(extractdata(predict(ensemble_mean{i}, nn_input)));
@@ -85,28 +86,36 @@ for mode = 1:2
             end
             
             % --- VISSZAOSZTJUK A 100-AS SZORZÓT ---
-            % Mivel abszolút hibát (szórást) tanultunk, NEM kell gyökvonás!
             w_zaj_mertek = mean(tippek_sigma, 2) / 100.0; 
             
-            max_biz = max(w_zaj_mertek(1:2));
-            w_raw = mean(tippek_mean, 2); 
+            % --- ÚJ: VALÓS IDEJŰ HIBA VISSZACSATOLÁSA (DINAMIKUS CSŐ) ---
+            % Kiszámoljuk az éppen aktuális eltérést a nominális állapottól (e_k)
+            % Ez felel meg a cikk szerinti dinamikus csőfrissítésnek!
+            aktualis_hiba = norm(x_real(1:2) - z_nom(1:2));
             
-            % --- NORMÁL HIPERPARAMÉTEREK ---
-            alpha_ema = max(0.02, 0.9 - (max_biz * 10.0));
+            alap_zaj_szoras = 0.02; % 2 cm-es alapzaj
+            
+            % A teljes bizonytalanság: az NN jóslata + alapzaj + az aktuális fizikai megcsúszás
+            % Ha az autó letér az ívről, az aktualis_hiba megnő, és a cső "kifújja magát"!
+            sigma_max = max(w_zaj_mertek(1:2)) + alap_zaj_szoras + (aktualis_hiba * 0.15); 
+            
+            w_raw = mean(tippek_mean, 2); 
+            alpha_ema = max(0.02, 0.9 - (sigma_max * 10.0));
             w_smoothed = (1 - alpha_ema) * w_smoothed + alpha_ema * w_raw; 
             w_becsult = max(min(w_smoothed, 0.5), -0.5); 
             
-            % Itt most már egy matematikailag korrekt szórásérték (max_biz) alapján
-            % állítjuk be a csőszűkítést és az agresszivitást.
-            tightening_factor = min(0.85, max_biz * 20.0); 
-            current_q_mult = min(exp(max_biz * 15.0), 15.0); 
+            % --- ANALITIKUS CSŐSZŰKÍTÉS (3-Szigma szabály) ---
+            d_max = 3.0 * sigma_max; 
+            margin_fizikai = min(d_max * 1.5, max_y_elteres * 0.85); 
+            current_q_mult = 1.0 + (margin_fizikai / max_y_elteres) * 5.0;
             
-            tube_history(k) = tightening_factor; 
+            tube_history(k) = margin_fizikai; 
             q_mult_history(k) = current_q_mult;
         end
         
         opti.set_value(x0_param, z_nom); opti.set_value(ref_param, current_ref);
-        opti.set_value(w_nn_param, w_becsult); opti.set_value(tube_uncertainty_param, tightening_factor); 
+        opti.set_value(w_nn_param, w_becsult); 
+        opti.set_value(tube_uncertainty_param, margin_fizikai); % <-- Itt adjuk át a fizikai margót!
         opti.set_value(q_mult_param, current_q_mult); 
         
         try, sol = opti.solve(); v_k_opt = sol.value(U(:, 1)); catch, v_k_opt = opti.debug.value(U(:, 1)); end
@@ -148,7 +157,10 @@ plot(t_sim_test(1:n_steps_test), errors_cl, 'b--', 'LineWidth', 1.5); plot(t_sim
 title('Hiba', 'Color', 'w'); set(ax2, 'Color', 'k', 'XColor', 'w', 'YColor', 'w');
 
 ax3 = subplot(1, 4, 3); hold on; grid on;
-plot(t_sim_test(1:n_steps_test), tube_history, 'y-', 'LineWidth', 1.5); title('Csőszűkítés', 'Color', 'w'); ylim([-0.1 1.1]); set(ax3, 'Color', 'k', 'XColor', 'w', 'YColor', 'w');
+plot(t_sim_test(1:n_steps_test), tube_history, 'y-', 'LineWidth', 1.5); 
+title('Csőszűkítés [m]', 'Color', 'w'); 
+axis tight; % <--- EZT ÁLLÍTSD BE! (A fix ylim helyett ez ránagyít a pontos értékekre)
+set(ax3, 'Color', 'k', 'XColor', 'w', 'YColor', 'w');
 
 ax4 = subplot(1, 4, 4); hold on; grid on;
 plot(t_sim_test(1:n_steps_test), q_mult_history, 'm-', 'LineWidth', 1.5); title('MPC Agresszivitás (Q Szorzó)', 'Color', 'w'); set(ax4, 'Color', 'k', 'XColor', 'w', 'YColor', 'w');

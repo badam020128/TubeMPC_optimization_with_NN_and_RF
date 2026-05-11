@@ -1,5 +1,5 @@
 % =========================================================================
-% DUAL-STAGE DEEP ENSEMBLE TANÍTÁS (14-es bemenet, NÖVELT KAPACITÁS)
+% DUAL-STAGE DEEP ENSEMBLE TANÍTÁS (15-es bemenet, NÖVELT KAPACITÁS)
 % =========================================================================
 disp('=== Kétlépcsős Deep Ensemble Tanítása Indul ===');
 
@@ -10,7 +10,7 @@ ensemble_sigma = cell(num_nets, 1);
 XTrain_dl = dlarray(Training_Inputs', 'CB');
 YTrain_dl = dlarray(Training_Outputs', 'CB');
 
-% --- Architektúra A hálózatoknak (14 BEMENET, 128 -> 64 -> 32) ---
+% --- Architektúra A hálózatoknak (15 BEMENET, 128 -> 64 -> 32) ---
 layers = [
     featureInputLayer(15, 'Normalization', 'zscore') 
     fullyConnectedLayer(128) 

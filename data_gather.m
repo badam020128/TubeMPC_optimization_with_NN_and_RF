@@ -186,4 +186,61 @@ disp('Adatgyűjtés (Sliding Window) kész!');
 % Végső trajektóriák kirajzolása
 plot(real_history(:,1), real_history(:,2), 'r--', 'LineWidth', 1.5);
 plot(nom_history(:,1), nom_history(:,2), 'b:', 'LineWidth', 1.5);
+
+% =========================================================================
+% ÚJ 4. PONT: DOMAIN RANDOMIZATION (Állapottér felfedezése)
+% =========================================================================
+disp('--- Szintetikus Extrém Adatok Generálása (Domain Randomization) ---');
+N_rand = 5000; % 5000 véletlenszerű fizikai szituáció betanítása
+Rand_Inputs = zeros(N_rand, 15);
+Rand_Outputs = zeros(N_rand, 4);
+
+for i = 1:N_rand
+    % 1. Véletlenszerű fizikai állapotok (A pálya mérete 100x100m, V max ~20m/s)
+    x_r = rand() * 100; 
+    y_r = rand() * 100; 
+    vx_r = (rand() - 0.5) * 40; % -20 és +20 m/s közötti extrém sebességek
+    vy_r = (rand() - 0.5) * 40; 
+    x_rand = [x_r; y_r; vx_r; vy_r];
+
+    % 2. Véletlenszerű múltbeli állapotok (hogy mozgásban lévő autót szimuláljunk)
+    x_hist1_rand = x_rand - [vx_r*Ts; vy_r*Ts; 0; 0] + randn(4,1)*0.2;
+    x_hist2_rand = x_hist1_rand - [vx_r*Ts; vy_r*Ts; 0; 0] + randn(4,1)*0.2;
+
+    % 3. Véletlenszerű irányítás és görbület
+    u_prev_r = (rand(2,1) - 0.5) * 100; % -50 és 50 közötti erők
+    u_k_r = (rand(2,1) - 0.5) * 100;
+    kappa_r = (rand() - 0.5) * 1.0; % Extrém görbületek
+
+    % 4. A Valós Fizika kiszámítása ezekre a pontokra (mint a fő ciklusban)
+    drag_x_r = -0.02 * x_rand(3) * abs(x_rand(3)) * Ts;
+    drag_y_r = -0.02 * x_rand(4) * abs(x_rand(4)) * Ts;
+
+    % Randomizált térbeli szél és turbulencia
+    spatial_wind_x_r = (0.3 + 0.3 * rand()) * sin((x_rand(1) / 15) + rand()*2*pi);
+    spatial_wind_y_r = (0.3 + 0.3 * rand()) * cos((x_rand(2) / 15) + rand()*2*pi);
+    zona_szorzo_r = 0.1 + 1.4 * (0.5 + 0.5 * tanh((x_rand(1) - 40) / 5));
+
+    zaj_x_r = spatial_wind_x_r * zona_szorzo_r; 
+    zaj_y_r = spatial_wind_y_r * zona_szorzo_r;
+
+    % Zavarójel
+    w_k_r = [0; 0; (0.8*Ts) + drag_x_r + zaj_x_r; (0.5*Ts) + drag_y_r + zaj_y_r];
+
+    % 5. Valós jövőkép vs. Lineáris modell szerinti predikció
+    x_real_new_r = A * x_rand + B * u_k_r + w_k_r;
+    x_predicted_r = A * x_rand + B * u_k_r;
+    residual_r = x_real_new_r - x_predicted_r;
+
+    % 6. Elmentjük az adatbázisba
+    Rand_Inputs(i, :) = [x_rand', x_hist1_rand', x_hist2_rand', u_prev_r', kappa_r];
+    Rand_Outputs(i, :) = residual_r';
+end
+
+% A szintetikus adatokat hozzácsapjuk az eddigi "normál" körözős adatokhoz
+Training_Inputs = [Training_Inputs; Rand_Inputs];
+Training_Outputs = [Training_Outputs; Rand_Outputs];
+
+disp(['Sikeresen hozzáadva ' num2str(N_rand) ' szintetikus adatpont.']);
+
 disp('Szimuláció sikeresen befejeződött!');
