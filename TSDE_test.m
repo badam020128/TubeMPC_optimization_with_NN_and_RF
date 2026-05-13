@@ -107,39 +107,32 @@ for mode = 1:2
                 tippek_sigma(:, i) = double(extractdata(predict(ensemble_sigma{i}, nn_input)));
             end
             
-            % --- VISSZAOSZTJUK A 100-AS SZORZÓT ---
-            w_zaj_mertek = mean(tippek_sigma, 2) / 100.0; 
+            % A hálózat most már a 95%-os Worst-Case kilengést adja, nem a sima szórás átlagát!
+            % (Osztunk 100-zal, mert a tanításnál ennyivel szoroztuk fel)
+            worst_case_hiba = mean(tippek_sigma, 2) / 100.0; 
             
-            % --- ÚJ: VALÓS IDEJŰ HIBA VISSZACSATOLÁSA (DINAMIKUS CSŐ) ---
-            % Kiszámoljuk az éppen aktuális eltérést a nominális állapottól (e_k)
-            % Ez felel meg a cikk szerinti dinamikus csőfrissítésnek!
+            % Az aktuális fizikai hiba visszacsatolása
             aktualis_hiba = norm(x_real(1:2) - z_nom(1:2));
+            alap_zaj_szoras = 0.02; % 2 cm alapzaj
             
-            alap_zaj_szoras = 0.02; % 2 cm-es alapzaj
-            
-            % A teljes bizonytalanság: az NN jóslata + alapzaj + az aktuális fizikai megcsúszás
-            % Ha az autó letér az ívről, az aktualis_hiba megnő, és a cső "kifújja magát"!
-            sigma_max = max(w_zaj_mertek(1:2)) + alap_zaj_szoras + (aktualis_hiba * 0.15); 
+            % A teljes bizonytalansági korlát
+            d_max_ai = max(worst_case_hiba(1:2)) + alap_zaj_szoras + (aktualis_hiba * 0.15); 
             
             w_raw = mean(tippek_mean, 2); 
-            % Eredeti: alpha_ema = max(0.02, 0.9 - (sigma_max * 10.0));
-            % ÚJ: Sokkal gyorsabb reakció az AI részéről!
-            alpha_ema = max(0.1, 1.0 - (sigma_max * 2.0)); 
-
+            
+            % Dinamikus simítás (EMA)
+            alpha_ema = max(0.1, 1.0 - (d_max_ai * 2.0)); 
             w_smoothed = (1 - alpha_ema) * w_smoothed + alpha_ema * w_raw; 
-
-            % TÚLKOMPENZÁLÁS: Mivel az MPC kicsit lassan reagál a belső tehetetlenség miatt, 
-            % szorozzuk fel a prediktált szél/hiba hatást 1.1-gyel (10% proaktív túlkormányzás)!
             w_becsult = max(min(w_smoothed * 1.1, 0.5), -0.5); 
             
-            % 3 helyett 2-szigma is elég lehet (95% konfidencia), és vegyük ki az 1.5-ös szorzót.
-            d_max = 2.0 * sigma_max; 
-            margin_fizikai = min(d_max, max_y_elteres * 0.90); 
+            % =====================================================
+            % TUBE SIZE (CSŐMÉRET) MEGHATÁROZÁSA VARÁZSSZÁMOK NÉLKÜL
+            % =====================================================
+            % A d_max közvetlenül az AI által jósolt felső korlát (d_max_ai), nincs 2.0-es szorzó!
+            margin_fizikai = min(d_max_ai, max_y_elteres * 0.90); 
 
-            % Ha ezt megléped, az autó sokkal többször fogja a current_q_mult-ot a maximális
-            % közelébe tolni, mert a cső indokolatlanul nem fog felfújódni.
             biztonsagi_tenyezo = (max_y_elteres - margin_fizikai) / max_y_elteres;
-            current_q_mult = 1.0 + (biztonsagi_tenyezo^2) * 20.0; % Mehet akár 20-as szorzó is!
+            current_q_mult = 1.0 + (biztonsagi_tenyezo^2) * 20.0;
             
             tube_history(k) = margin_fizikai; 
             q_mult_history(k) = current_q_mult;
