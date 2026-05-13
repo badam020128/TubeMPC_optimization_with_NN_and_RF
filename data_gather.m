@@ -5,7 +5,7 @@ import casadi.*
 disp('=== 1. FÁZIS: CasADi MPC Szimuláció és Adatgyűjtés Indul ===');
 
 % --- BRUTE-FORCE ADATGYŰJTÉS ---
-korok_szama = 20;
+korok_szama = 10;
 egy_kor_pontjai = smooth_path(1:end-1, :); 
 multi_lap_path = repmat(egy_kor_pontjai, korok_szama, 1);
 multi_lap_path = [multi_lap_path; smooth_path(end, :)];
@@ -14,7 +14,7 @@ multi_lap_path = [multi_lap_path; smooth_path(end, :)];
 % Fontos: Minden futtatásnál más legyen a széllökés alapja
 rng('shuffle');
 Ts = 0.1; 
-V_target = 5; 
+V_target = 3.5; 
 N = 10; 
 
 ds = sqrt(diff(multi_lap_path(:,1)).^2 + diff(multi_lap_path(:,2)).^2);
@@ -109,6 +109,10 @@ x_hist1 = x_real;
 x_hist2 = x_real; 
 u_prev_log = [0; 0];
 
+% A ciklus ELŐTT
+zaj_kormany_memoria = 0;
+zaj_gaz_memoria = 0;
+
 % 6. VEZÉRLÉSI HUROK
 for k = 1 : length(t_sim) - N - 1
     
@@ -149,11 +153,31 @@ for k = 1 : length(t_sim) - N - 1
 
     w_k = [0; 0; const_wind_x + drag_x + zaj_x; const_wind_y + drag_y + zaj_y];
     
-    x_real_new = A * x_real + B * u_k + w_k;
+    % --- RENDSZER-IDENTIFIKÁCIÓS (FELFEDEZŐ) ZAJ ---
+    % Mesterségesen picit "megrángatjuk" a kormányt és a gázt, hogy a gumiabroncs
+    % különböző csúszási szögeket (Slip Angle) tapasztaljon meg. Ezt az MPC nem látja!
+    % Ebből fogja az LSTM megtanulni az extrém fizikai határokat.
     
-    % Adatok rögzítése a tanításhoz
+    % --- RENDSZER-IDENTIFIKÁCIÓS (AUTOREGRESSZÍV) ZAJ ---
+    % Ez már nem tiszta fehér zaj! Ez egy "vándorló" hiba, ami 
+    % tartósan kitolja az autót az ívről (pl. rossz futómű-beállítás,
+    % vagy egy több másodperces vízátfolyás szimulálása).
+    
+    % 90%-ban megtartja az előző értéket, 10%-ban kap új véletlent
+    zaj_kormany_memoria = 0.90 * zaj_kormany_memoria + 0.10 * randn() * 0.4;
+    zaj_gaz_memoria     = 0.90 * zaj_gaz_memoria     + 0.10 * randn() * 1.0;
+    
+    u_k_zajos = u_k + [zaj_gaz_memoria; zaj_kormany_memoria];
+    
+    % A VALÓSÁG
+    x_real_new = dynamic_car_step(x_real, u_k_zajos, Ts);
+    
+    % A VALÓSÁG: Az új dinamikus fizikai motor hajtja az autót a zajos bemenettel
+    x_real_new = dynamic_car_step(x_real, u_k_zajos, Ts);
+    
+    % Az MPC (buta modell) szerinti predikció
     x_predicted = A * x_real_prev + B * u_k; 
-    residual_error = x_real_new - x_predicted;
+    residual_error = x_real_new - x_predicted; % A gumi csúszásából adódó hiba!
 
     % --- ÚJ: 15 ELEMŰ BEMENET MENTÉSE (kappa-val kiegészítve) ---
     current_kappa = kappa_ref(k);
@@ -244,3 +268,65 @@ Training_Outputs = [Training_Outputs; Rand_Outputs];
 disp(['Sikeresen hozzáadva ' num2str(N_rand) ' szintetikus adatpont.']);
 
 disp('Szimuláció sikeresen befejeződött!');
+
+% =========================================================================
+% SEGÉDFÜGGVÉNY: VALÓS GUMIABRONCS FIZIKA (Dinamikus Kerékpármodell)
+% =========================================================================
+function x_real_new = dynamic_car_step(x_real, u_k, Ts)
+% x_real = [X, Y, Vx, Vy]
+% u_k = [ax, ay] (A CasADi MPC által kért ideális gyorsulások)
+
+% 1. Autó fizikai paraméterei
+m = 1500; Iz = 2500; Lf = 1.2; Lr = 1.6; L = Lf + Lr;
+Cf = 80000; Cr = 80000; % Kanyarodási merevség (Cornering stiffness)
+mu = 0.9; g = 9.81; % Súrlódási együttható (Tapadás)
+
+% 2. Jelenlegi állapotok
+X = x_real(1); Y = x_real(2);
+Vx = x_real(3); Vy = x_real(4);
+V = max(sqrt(Vx^2 + Vy^2), 0.1); % Jármű sebessége
+psi = atan2(Vy, Vx); % Jármű tényleges haladási iránya
+
+% 3. Mit kér az MPC? (Átfordítjuk a globális ax,ay-t autó-specifikus gázra és kormányra)
+ax_global = u_k(1); ay_global = u_k(2);
+a_lon_req = ax_global * cos(psi) + ay_global * sin(psi); % Gáz/Fék pedál
+a_lat_req = -ax_global * sin(psi) + ay_global * cos(psi); % Kívánt keresztgyorsulás
+
+% Kinematikai kormányszög számítása az MPC kérése alapján
+delta = atan((L * a_lat_req) / (V^2));
+delta = max(min(delta, 0.6), -0.6); % Kormány limitálása (+- ~35 fok)
+
+% 4. VALÓS GUMIABRONCS CSÚSZÁS SZÁMÍTÁSA (Slip Angles)
+% Kiszámoljuk, mennyire csúszik meg a kocsi fara és orra az adott kormányszögnél
+beta = delta * (Lr / L); % Oldalcsúszási szög
+r_kin = (V / L) * tan(delta); % Perdület
+
+alpha_f = delta - atan((V * sin(beta) + Lf * r_kin) / (V * cos(beta)));
+alpha_r = -atan((V * sin(beta) - Lr * r_kin) / (V * cos(beta)));
+
+% 5. Nemlineáris Gumi Erők (Tapadás elvesztése)
+Fz_f = m * g * (Lr / L);
+Fz_r = m * g * (Lf / L);
+
+% Tanh() limitálja az erőt: Ha túl nagy a csúszás, a gumi nem tapad jobban!
+F_yf = mu * Fz_f * tanh((Cf * alpha_f) / (mu * Fz_f));
+F_yr = mu * Fz_r * tanh((Cr * alpha_r) / (mu * Fz_r));
+
+% Valós keresztirányú gyorsulás (Ez az, ami MIATT az autó "kiesik" az ívről!)
+a_lat_real = (F_yf * cos(delta) + F_yr) / m;
+
+% 6. Visszatranszformálás globális koordinátarendszerbe
+ax_real = a_lon_req * cos(psi) - a_lat_real * sin(psi);
+ay_real = a_lon_req * sin(psi) + a_lat_real * cos(psi);
+
+% Kiegészítő külső szél / turbulencia (csak egy pici, hogy az is legyen)
+szel_x = 0.5 * sin(X/20); szel_y = 0.5 * cos(Y/20);
+
+% Új állapotok integrálása
+Vx_new = Vx + (ax_real + szel_x) * Ts;
+Vy_new = Vy + (ay_real + szel_y) * Ts;
+X_new = X + Vx_new * Ts;
+Y_new = Y + Vy_new * Ts;
+
+x_real_new = [X_new; Y_new; Vx_new; Vy_new];
+end

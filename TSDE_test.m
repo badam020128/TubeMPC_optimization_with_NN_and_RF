@@ -12,7 +12,7 @@ num_nets = length(ensemble_mean);
 % Pálya (1 kör teszt)
 egy_kor_pontjai = smooth_path(1:end-1, :); 
 multi_lap_path = [egy_kor_pontjai; smooth_path(end, :)];
-Ts = 0.1; V_target = 5; N = 10; 
+Ts = 0.1; V_target = 3.5; N = 10; 
 
 % Saját dist és t_path számítása 1 körre! ---
 ds = sqrt(diff(multi_lap_path(:,1)).^2 + diff(multi_lap_path(:,2)).^2);
@@ -158,7 +158,10 @@ for mode = 1:2
         w_k = [0; 0; (0.8*Ts) + drag_x + (spatial_x + szel_memoria(1))*zona_szorzo; 
                      (0.5*Ts) + drag_y + (spatial_y + szel_memoria(2))*zona_szorzo];
         
-        x_real_new = A * x_real + B * u_k + w_k;
+        % Fizika: Valós Dinamikus Szimulátor
+        x_real_new = dynamic_car_step(x_real, u_k, Ts);
+        
+        % MPC (Nominális modell + AI kompenzáció)
         z_nom = A * z_nom + B * v_k_opt + w_becsult; 
         
         % Csúszóablak frissítése
@@ -193,3 +196,66 @@ plot(t_sim_test(1:n_steps_test), q_mult_history, 'm-', 'LineWidth', 1.5); title(
 
 mean_cl = mean(errors_cl); mean_ai = mean(errors_ai);
 fprintf('\n=== VÉGSŐ EREDMÉNYEK ===\nKlasszikus: %.4f m\nAI (TSDE): %.4f m\nJAVULÁS: +%.1f %%\n', mean_cl, mean_ai, (1 - (mean_ai / mean_cl)) * 100);
+
+
+% =========================================================================
+% SEGÉDFÜGGVÉNY: VALÓS GUMIABRONCS FIZIKA (Dinamikus Kerékpármodell)
+% =========================================================================
+function x_real_new = dynamic_car_step(x_real, u_k, Ts)
+% x_real = [X, Y, Vx, Vy]
+% u_k = [ax, ay] (A CasADi MPC által kért ideális gyorsulások)
+
+% 1. Autó fizikai paraméterei
+m = 1500; Iz = 2500; Lf = 1.2; Lr = 1.6; L = Lf + Lr;
+Cf = 80000; Cr = 80000; % Kanyarodási merevség (Cornering stiffness)
+mu = 0.9; g = 9.81; % Súrlódási együttható (Tapadás)
+
+% 2. Jelenlegi állapotok
+X = x_real(1); Y = x_real(2);
+Vx = x_real(3); Vy = x_real(4);
+V = max(sqrt(Vx^2 + Vy^2), 0.1); % Jármű sebessége
+psi = atan2(Vy, Vx); % Jármű tényleges haladási iránya
+
+% 3. Mit kér az MPC? (Átfordítjuk a globális ax,ay-t autó-specifikus gázra és kormányra)
+ax_global = u_k(1); ay_global = u_k(2);
+a_lon_req = ax_global * cos(psi) + ay_global * sin(psi); % Gáz/Fék pedál
+a_lat_req = -ax_global * sin(psi) + ay_global * cos(psi); % Kívánt keresztgyorsulás
+
+% Kinematikai kormányszög számítása az MPC kérése alapján
+delta = atan((L * a_lat_req) / (V^2));
+delta = max(min(delta, 0.6), -0.6); % Kormány limitálása (+- ~35 fok)
+
+% 4. VALÓS GUMIABRONCS CSÚSZÁS SZÁMÍTÁSA (Slip Angles)
+% Kiszámoljuk, mennyire csúszik meg a kocsi fara és orra az adott kormányszögnél
+beta = delta * (Lr / L); % Oldalcsúszási szög
+r_kin = (V / L) * tan(delta); % Perdület
+
+alpha_f = delta - atan((V * sin(beta) + Lf * r_kin) / (V * cos(beta)));
+alpha_r = -atan((V * sin(beta) - Lr * r_kin) / (V * cos(beta)));
+
+% 5. Nemlineáris Gumi Erők (Tapadás elvesztése)
+Fz_f = m * g * (Lr / L);
+Fz_r = m * g * (Lf / L);
+
+% Tanh() limitálja az erőt: Ha túl nagy a csúszás, a gumi nem tapad jobban!
+F_yf = mu * Fz_f * tanh((Cf * alpha_f) / (mu * Fz_f));
+F_yr = mu * Fz_r * tanh((Cr * alpha_r) / (mu * Fz_r));
+
+% Valós keresztirányú gyorsulás (Ez az, ami MIATT az autó "kiesik" az ívről!)
+a_lat_real = (F_yf * cos(delta) + F_yr) / m;
+
+% 6. Visszatranszformálás globális koordinátarendszerbe
+ax_real = a_lon_req * cos(psi) - a_lat_real * sin(psi);
+ay_real = a_lon_req * sin(psi) + a_lat_real * cos(psi);
+
+% Kiegészítő külső szél / turbulencia (csak egy pici, hogy az is legyen)
+szel_x = 0.5 * sin(X/20); szel_y = 0.5 * cos(Y/20);
+
+% Új állapotok integrálása
+Vx_new = Vx + (ax_real + szel_x) * Ts;
+Vy_new = Vy + (ay_real + szel_y) * Ts;
+X_new = X + Vx_new * Ts;
+Y_new = Y + Vy_new * Ts;
+
+x_real_new = [X_new; Y_new; Vx_new; Vy_new];
+end
