@@ -1,96 +1,100 @@
 % =========================================================================
-% DUAL-STAGE DEEP ENSEMBLE TANÍTÁS BAGGING-EL ÉS KVANTILIS REGRESSZIÓVAL
+% DUAL-STAGE DEEP ENSEMBLE TANÍTÁS: LSTM + BAGGING + PINBALL LOSS
 % =========================================================================
-disp('=== Kétlépcsős Deep Ensemble Tanítása Indul (Bagging + Pinball Loss) ===');
+disp('=== Kétlépcsős LSTM Deep Ensemble Tanítása Indul ===');
 
 num_nets = 10; 
 ensemble_mean = cell(num_nets, 1);
 ensemble_sigma = cell(num_nets, 1);
-
 total_samples = size(Training_Inputs, 1);
 
-% --- Architektúra A hálózatoknak (Átlag kompenzáció) ---
+% --- ADATOK ELŐKÉSZÍTÉSE LSTM-HEZ ---
+X_Seq_3D = zeros(7, total_samples, 3);
+
+for i = 1:total_samples
+    x_now = Training_Inputs(i, 1:4)';
+    x_h1  = Training_Inputs(i, 5:8)';
+    x_h2  = Training_Inputs(i, 9:12)';
+    u_p   = Training_Inputs(i, 13:14)';
+    kap   = Training_Inputs(i, 15);
+    
+    % NINCS TÖBB NULLA! Bemásoljuk az 'u_p' és 'kap' értékeket a múltba is,
+    % így az LSTM érti, hogy a múltbeli elmozdulás is emiatt a kormányszög miatt volt!
+    X_Seq_3D(:, i, 1) = [x_h2; u_p; kap];
+    X_Seq_3D(:, i, 2) = [x_h1; u_p; kap];
+    X_Seq_3D(:, i, 3) = [x_now; u_p; kap];
+end
+
+% Konvertálás dlarray-be explicit 'CBT' (Channel, Batch, Time) címkékkel
+X_Seq_dl = dlarray(X_Seq_3D, 'CBT');
+
+% Célváltozók előkészítése 'CB' (Channel, Batch) címkékkel
+Y_Mean_dl = dlarray(Training_Outputs', 'CB'); % 4 x N
+
+% --- Architektúra A (Átlag-kompenzáció LSTM-el) ---
 layers = [
-    featureInputLayer(15, 'Normalization', 'zscore') 
-    fullyConnectedLayer(128) 
-    reluLayer
-    fullyConnectedLayer(64)  
-    reluLayer
-    fullyConnectedLayer(32)  
+    sequenceInputLayer(7) 
+    lstmLayer(64, 'OutputMode', 'last') 
+    fullyConnectedLayer(32)
     reluLayer
     fullyConnectedLayer(4) 
     ];
 
-options = trainingOptions('adam', 'MaxEpochs', 200, 'MiniBatchSize', 512, ...
+options = trainingOptions('adam', 'MaxEpochs', 150, 'MiniBatchSize', 512, ...
     'InitialLearnRate', 0.005, 'Verbose', false, 'Plots', 'none');
 
-disp('--> 1. Lépcső: Ensemble A (Átlag-kompenzáció) tanítása Bagging-el...');
+disp('--> 1. Lépcső: Ensemble A (LSTM Átlag) tanítása Bagging-el...');
 for i = 1:num_nets
-    fprintf('    A-Hálózat %d / %d...\n', i, num_nets);
+    fprintf('    A-LSTM %d / %d...\n', i, num_nets);
     
-    % BAGGING: Visszatevéses mintavétel
+    % Bagging
     idx = randsample(total_samples, total_samples, true); 
-    XTrain_bag = dlarray(Training_Inputs(idx, :)', 'CB');
-    YTrain_bag = dlarray(Training_Outputs(idx, :)', 'CB');
     
-    ensemble_mean{i} = trainnet(XTrain_bag, YTrain_bag, layers, "mse", options);
+    % Indexelés a Batch (2.) dimenzió mentén!
+    X_bag = X_Seq_dl(:, idx, :);
+    Y_bag = Y_Mean_dl(:, idx);
+    
+    ensemble_mean{i} = trainnet(X_bag, Y_bag, layers, "mse", options);
 end
 
-disp('--> Köztes lépés: Az ensemble hiba kiszámítása a teljes halmazon...');
-XTrain_Full_dl = dlarray(Training_Inputs', 'CB');
-preds_mean = zeros(size(Training_Outputs));
+% Hiba kiszámítása a B lépcsőhöz
+preds_mean = zeros(4, total_samples);
 for i = 1:num_nets
-    preds_mean = preds_mean + double(extractdata(predict(ensemble_mean{i}, XTrain_Full_dl)))';
+    % predict egy 4xN mátrixot (CB) ad vissza dlarray-ként
+    preds_mean = preds_mean + double(extractdata(predict(ensemble_mean{i}, X_Seq_dl)));
 end
 preds_mean = preds_mean / num_nets;
 
-% A hiba kiszámítása
-residual_errors = Training_Outputs - preds_mean; 
-% Felszorzás 100-zal a numerikus stabilitás miatt (tesztelésnél visszaosztjuk)
-YTrain_sigma = residual_errors * 100.0; 
+% Felszorzás 100-zal, a kimenet szintén 'CB' (4 x N)
+Y_Sigma_dl = dlarray((Training_Outputs' - preds_mean) * 100.0, 'CB'); 
 
-% --- Architektúra B hálózatoknak (Worst-case határ becslése) ---
+% --- Architektúra B (Bizonytalanság/Csőméret LSTM-el) ---
 layers_sigma = [
-    featureInputLayer(15, 'Normalization', 'zscore') 
-    fullyConnectedLayer(128) 
-    leakyReluLayer(0.01)
-    fullyConnectedLayer(64)  
-    leakyReluLayer(0.01)
-    fullyConnectedLayer(32)  
-    leakyReluLayer(0.01)
+    sequenceInputLayer(7)
+    lstmLayer(64, 'OutputMode', 'last')
+    fullyConnectedLayer(32)
+    reluLayer
     fullyConnectedLayer(4)
     ];
 
-disp('--> 2. Lépcső: Ensemble B (95%-os Bizonytalansági korlát) tanítása Pinball Loss-szal...');
+disp('--> 2. Lépcső: Ensemble B (LSTM 95% Bound) tanítása Pinball Loss-al...');
 for i = 1:num_nets
-    fprintf('    B-Hálózat %d / %d...\n', i, num_nets);
+    fprintf('    B-LSTM %d / %d...\n', i, num_nets);
     
-    % BAGGING itt is
     idx = randsample(total_samples, total_samples, true); 
-    XTrain_sigma_bag = dlarray(Training_Inputs(idx, :)', 'CB');
-    YTrain_sigma_bag = dlarray(YTrain_sigma(idx, :)', 'CB');
     
-    % ÚJÍTÁS: Itt a "mse" helyett a @pinball_loss custom függvényt használjuk!
-    ensemble_sigma{i} = trainnet(XTrain_sigma_bag, YTrain_sigma_bag, layers_sigma, @pinball_loss, options);
+    X_bag = X_Seq_dl(:, idx, :);
+    Y_sigma_bag = Y_Sigma_dl(:, idx);
+    
+    ensemble_sigma{i} = trainnet(X_bag, Y_sigma_bag, layers_sigma, @pinball_loss, options);
 end
-disp('=== TANÍTÁS KÉSZ! ===');
+disp('=== LSTM TANÍTÁS KÉSZ! ===');
 
-
-% =========================================================================
-% SEGÉDFÜGGVÉNY: Kvantilis Regresszió (Pinball Loss)
-% =========================================================================
 function loss = pinball_loss(YPred, YTrue)
-    % A 95%-os kvantilis keresése (q = 0.95). 
-    % A hálózat a legrosszabb esetek (worst-case) felső határát fogja megtanulni.
-    q = 0.95; 
-    
-    % Mivel felső határt keresünk, a hibák abszolút értékén dolgozunk
-    % Így a negatív és pozitív kilengésekre is szimmetrikus felső burkológörbét kapunk
+    % 0.95 helyett 0.90: Ezzel a cső (tube) mérete szűkebb lesz, 
+    % az MPC pedig bátrabban tud majd a referenciához tapadni.
+    q = 0.90; 
     error = abs(YTrue) - YPred;
-    
-    % Pinball Loss: max(q * error, (q - 1) * error)
     loss_matrix = max(q * error, (q - 1) * error);
-    
-    % Átlagolás a batchen
     loss = mean(sum(loss_matrix, 1));
 end

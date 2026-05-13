@@ -97,46 +97,48 @@ for mode = 1:2
         current_ref = RefMatrix(k : k+N, :)';
         if mode == 1
             w_becsult = [0; 0; 0; 0]; margin_fizikai = 0.0; current_q_mult = 1.0; 
+        % ... [mode == 2 ág eleje] ...
         else
             current_kappa = kappa_ref_test(k);
-            nn_input = dlarray([x_real; x_hist1; x_hist2; u_prev; current_kappa], 'CB'); 
             
-            tippek_mean = zeros(4, num_nets); tippek_sigma = zeros(4, num_nets);
+            % Múltbeli értékek feltöltése a valós kormány-kontextussal
+            nn_input_3d = zeros(7, 1, 3);
+            nn_input_3d(:, 1, 1) = [x_hist2; u_prev; current_kappa];
+            nn_input_3d(:, 1, 2) = [x_hist1; u_prev; current_kappa];
+            nn_input_3d(:, 1, 3) = [x_real;  u_prev; current_kappa];
+            
+            nn_input_dl = dlarray(nn_input_3d, 'CBT');
+            
+            tippek_mean = zeros(4, num_nets);
+            tippek_sigma = zeros(4, num_nets);
             for i = 1:num_nets
-                tippek_mean(:, i) = double(extractdata(predict(ensemble_mean{i}, nn_input)));
-                tippek_sigma(:, i) = double(extractdata(predict(ensemble_sigma{i}, nn_input)));
+                tippek_mean(:, i) = double(extractdata(predict(ensemble_mean{i}, nn_input_dl)));
+                tippek_sigma(:, i) = double(extractdata(predict(ensemble_sigma{i}, nn_input_dl)));
             end
             
-            % A hálózat most már a 95%-os Worst-Case kilengést adja, nem a sima szórás átlagát!
-            % (Osztunk 100-zal, mert a tanításnál ennyivel szoroztuk fel)
             worst_case_hiba = mean(tippek_sigma, 2) / 100.0; 
-            
-            % Az aktuális fizikai hiba visszacsatolása
             aktualis_hiba = norm(x_real(1:2) - z_nom(1:2));
-            alap_zaj_szoras = 0.02; % 2 cm alapzaj
+            alap_zaj_szoras = 0.01; % Tovább csökkentett alapzaj
             
-            % A teljes bizonytalansági korlát
-            d_max_ai = max(worst_case_hiba(1:2)) + alap_zaj_szoras + (aktualis_hiba * 0.15); 
+            d_max_ai = max(worst_case_hiba(1:2)) + alap_zaj_szoras + (aktualis_hiba * 0.05); 
             
+            % ========================================================
+            % EMA SZŰRŐ KIVÉVE! Nincs több fáziskésés, az LSTM gyors!
+            % ========================================================
             w_raw = mean(tippek_mean, 2); 
+            w_becsult = max(min(w_raw * 1.05, 0.5), -0.5); 
             
-            % Dinamikus simítás (EMA)
-            alpha_ema = max(0.1, 1.0 - (d_max_ai * 2.0)); 
-            w_smoothed = (1 - alpha_ema) * w_smoothed + alpha_ema * w_raw; 
-            w_becsult = max(min(w_smoothed * 1.1, 0.5), -0.5); 
+            margin_fizikai = min(d_max_ai, max_y_elteres * 0.95); 
             
-            % =====================================================
-            % TUBE SIZE (CSŐMÉRET) MEGHATÁROZÁSA VARÁZSSZÁMOK NÉLKÜL
-            % =====================================================
-            % A d_max közvetlenül az AI által jósolt felső korlát (d_max_ai), nincs 2.0-es szorzó!
-            margin_fizikai = min(d_max_ai, max_y_elteres * 0.90); 
-
+            % Exponenciálisan bátrabb MPC! 
+            % (Köbre emeljük a tényezőt és 100-zal szorozzuk)
             biztonsagi_tenyezo = (max_y_elteres - margin_fizikai) / max_y_elteres;
-            current_q_mult = 1.0 + (biztonsagi_tenyezo^2) * 20.0;
+            current_q_mult = 1.0 + (biztonsagi_tenyezo^3) * 100.0; 
             
             tube_history(k) = margin_fizikai; 
             q_mult_history(k) = current_q_mult;
         end
+        % ... [szimuláció folytatása] ...
         
         opti.set_value(x0_param, z_nom); opti.set_value(ref_param, current_ref);
         opti.set_value(w_nn_param, w_becsult); 
