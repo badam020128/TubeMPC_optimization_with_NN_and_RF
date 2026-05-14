@@ -13,10 +13,10 @@ run("path_define.m")
 
 % run tube MPC for previously defined reference path for data gathering
 % purposes for further ML training
-run("data_gather.m")
+%run("data_gather.m")
 
 % DSDE (Dual-Stage Deep Ensemble) with 5-5 neural networks for remaining
 % error minimalization, and uncertainty prediction
 
-run("TSDE_train.m")
-run("TSDE_test.m")
+%run("TSDE_train.m")
+%run("TSDE_test.m")
